@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, minimal-ui">
+    <title>TopCoder Gas Price Predicition Challenge</title>
+    <link type="text/css" rel="stylesheet" href="../../../../tmp/out/assets/css/github-markdown.css">
+    <link type="text/css" rel="stylesheet" href="../../../../tmp/out/assets/css/hljs-github.min.css"/>
+    <style>
+      body {
+        min-width: 200px;
+        max-width: 790px;
+        margin: 0 auto;
+        padding: 30px;
+      }
+    </style>
+  </head>
+  <body>
+    <article class="markdown-body"><h1 id="topcoder-gas-price-predicition-challenge">TopCoder Gas Price Predicition Challenge</h1>
+<p>This is a submission project for TopCoder&#39;s &quot;Gasoline Price Predictive Analytics Tutorial with HP Haven&quot; challenge. We&#39;re going to use two products of HP Haven&#39;s Big Data Platform: &quot;Vertica&quot;, a column-oriented analytical database and &quot;Distributed R&quot;, distributed platform for running applications written in the &quot;R&quot; language. The goal is to build a predictive model in R for Gasoline prices in the USA using sample data provided and/or outside data. The output is a CSV file with inputs and the predicted output.</p>
+<h2 id="1-installing-vertica">1. INSTALLING VERTICA</h2>
+<p>We&#39;ll use a virtual machine with Vertica pre-installed. The VM is regular CentOS 5.5 distribution. To download the VM you must create an account in <a href="http://my.vertica.com">http://my.vertica.com</a> then proceed to &quot;Downloads&quot;. We&#39;ll provide a step-by-step installation but you can check the <a href="http://my.vertica.com/docs/7.1.x/HTML/index.htm">official documentaion</a> if you need more info.You can use any VM player you want that support either VMDK or OVF files. HP recommends VMware Player or vSphere.</p>
+<h2 id="2-configuring-vertica">2. CONFIGURING VERTICA</h2>
+<p>After you boot Vertica&#39;s VM, you can login with &quot;dbadmin&quot; as  username and &quot;password&quot; as password. Fire the terminal (Applications -&gt; Accessories -&gt; Terminal) and run:</p>
+<pre class="hljs"><code>[dbadmin<span class="hljs-variable">@vertica</span>]<span class="hljs-variable">$ </span>admintools</code></pre><p>Accept the EULA then open the &quot;Configuration Menu&quot;. Select &quot;Create Database&quot; to create a new database called &quot;gas&quot; and with password &quot;gaspwd&quot;. Assume all the defaults and after the database initialization you should see a &quot;Database gas created successfully&quot;. Go back to the Main Menu and select &quot;View Database Cluster State&quot;. You should see the gas database in the list with the state &quot;UP&quot;.</p>
+<p>Now we should load the sql data in the local &quot;assets/oil_data&quot; folder into Vertica. We&#39;ve built a Python script to automate this (you need Python 2.7 installed). First, you should find your VM&#39;s IP address by issuing the following command in the terminal:</p>
+<pre class="hljs"><code>[dbadmin<span class="hljs-variable">@vertica</span>]<span class="hljs-variable">$ </span>/sbin/ifconfig eth<span class="hljs-number">0</span> | grep <span class="hljs-string">'inet '</span></code></pre><p>It will tell you the the IP address of the VM. Write it down because will need it later or, better yet, append it to your local machine <code>/etc/hosts</code> file:</p>
+<pre class="hljs"><code>[user@yourmachine]$ <span class="hljs-built_in">echo</span> <span class="hljs-string">'&lt;IP-of-Vertica&gt; verticavm'</span> | sudo tee <span class="hljs-operator">-a</span> /etc/hosts</code></pre><p>Now you just have to run on local machine, in this project&#39;s root folder:</p>
+<pre class="hljs"><code>[user<span class="hljs-variable">@yourmachine</span>]<span class="hljs-variable">$ </span>./load_data_into_vertica.py verticavm</code></pre><p>The script will upload the data to the server. It should take a few minutes. (Note: it assumes you haven&#39;t changed the default password. If you did, edit the script file.)</p>
+<h2 id="3-installing-distributed-r">3. INSTALLING DISTRIBUTED-R</h2>
+<p>&quot;Distributed R&quot; is a scalable distributed platform for running R scripts. First you&#39;ll need to download the latest binary distribution from <a href="http://my.vertica.com">http://my.vertica.com</a>. In the &quot;Download&quot; section, search for &quot;HP Vertica Distributed R&quot; then select the &quot;Distributed R 1.0.0 – Red Hat/CentOS&quot; option. Agree to the EULA and wait for the download to complete.</p>
+<p>For Distributed-R, we&#39;re going to install in a pristine CentOS 6.5 (64-bit) machine. You can install from CentOS official ISO files or you can search for a ready-made appliance. For the installation part, we&#39;ll the commands as <code>root</code>. Again, discover the IP of the new VM and add it to your local hosts file:</p>
+<pre class="hljs"><code>[root@dist-r]# <span class="hljs-regexp">/sbin/i</span>fconfig eth0 | <span class="hljs-keyword">grep</span> <span class="hljs-string">'inet '</span></code></pre><pre class="hljs"><code>[user@yourmachine]$ <span class="hljs-built_in">echo</span> <span class="hljs-string">'&lt;IP-of-VM&gt; dist-r-vm'</span> | sudo tee <span class="hljs-operator">-a</span> /etc/hosts</code></pre><p>First, make sure you have SSH running in the virtual machine. If it&#39;s not installed you can fix that by issuing:</p>
+<pre class="hljs"><code>[root<span class="hljs-property">@dist</span>-r]<span class="hljs-comment"># yum install openssh-server</span></code></pre><p>Now make sure you can ssh to your own user without a password. To setup a SSH password-less connection:</p>
+<pre class="hljs"><code>[root<span class="hljs-property">@dist</span>-r]<span class="hljs-comment"># ssh-keygen</span>
+[root<span class="hljs-property">@dist</span>-r]<span class="hljs-comment"># ssh-copy-id localhost</span>
+[root<span class="hljs-property">@dist</span>-r]<span class="hljs-comment"># ssh localhost           # test it!</span></code></pre><p>After configuring the virtual machine, we can start installing the Distributed-R. Copy the downloaded file into the VM and extract the file into &quot;/tmp&quot;. (Note: for some reason, I had to gunzip the file first before untarring) We&#39;ll install it in localhost in Single Node mode.</p>
+<pre class="hljs"><code>[root<span class="hljs-property">@dist</span>-r]<span class="hljs-comment"># cd /tmp/vertica-distributedR-1.0.0-0/helpers</span>
+[root<span class="hljs-property">@dist</span>-r]<span class="hljs-comment"># ./distributedR_install_dependencies localhost</span></code></pre><p>Install all missing dependencies when asked. It should take a while. Once finished, run the installation script as instructed:</p>
+<pre class="hljs"><code>[root<span class="hljs-property">@dist</span>-r]<span class="hljs-comment"># cd /tmp/vertica-distributedR-1.0.0-0/        # note we descended one directory</span>
+[root<span class="hljs-property">@dist</span>-r]<span class="hljs-comment"># ./distributedR_install localhost</span></code></pre><p>When asked:</p>
+<ul class="list">
+<li>Select the localhost as the master <code>[1]</code></li>
+<li>Set all nodes as workers <code>[1]</code></li>
+<li>Do not specify custom port ranges <code>[n]</code></li>
+<li>Install Vertica RODBC support <code>[Y]</code></li>
+<li>Run the test to make sure everything is OK <code>[Y]</code></li>
+</ul>
+<p>Distributed R is now installed. To test it, from the dist-r VM:</p>
+<pre class="hljs"><code>[root@dist-r]<span class="hljs-comment"># R        # start the R session</span>
+
+&gt; <span class="hljs-keyword">library</span>(distributedR)
+<span class="hljs-keyword">...</span> should load the dependencies
+
+&gt; distributedR_start()
+Workers registered - <span class="hljs-number">1</span>/<span class="hljs-number">1.</span>
+All <span class="hljs-number">1</span> workers are registered.
+Master address:port - localhost:<span class="hljs-number">50000</span></code></pre><h2 id="4-installing-r-studio-server">4. INSTALLING R-STUDIO SERVER</h2>
+<p>Now we&#39;re going to install on the Distributed R Virtual Machine the &quot;R-Studio Server&quot; environment. This enables us to run R scripts on the virtual machine&#39;s R installation from the comfort of our local machine. We&#39;ll follow the instructions for the CentOS 6.x.</p>
+<pre class="hljs"><code>[root<span class="hljs-property">@dist</span>-r]<span class="hljs-comment"># yum install openssl098e wget</span>
+[root<span class="hljs-property">@dist</span>-r]<span class="hljs-comment"># wget http://download2.rstudio.org/rstudio-server-0.98.1102-x86_64.rpm</span>
+[root<span class="hljs-property">@dist</span>-r]<span class="hljs-comment"># yum install --nogpgcheck rstudio-server-0.98.1102-x86_64.rpm</span>
+[root<span class="hljs-property">@dist</span>-r]<span class="hljs-comment"># rstudio-server verify-installation     # check installation</span></code></pre><p>You can add the command <code>rstudio-server start</code> to the end of the <code>/etc/rc.local</code> file to have the R Studio Server start on machine boot. We&#39;ll need login credentials to access R Studio so let&#39;s create them now using standard Linux tools. For every user, we&#39;ll also need to setup password-less ssh connection to localhost.</p>
+<pre class="hljs"><code>[root<span class="hljs-variable">@dist</span>-r]<span class="hljs-comment"># useradd user</span>
+[root<span class="hljs-variable">@dist</span>-r]<span class="hljs-comment"># passwd user</span>
+
+[root<span class="hljs-variable">@dist</span>-r]<span class="hljs-comment"># su - user</span>
+[user<span class="hljs-variable">@dist</span>-r]<span class="hljs-variable">$ </span>ssh-keygen
+[user<span class="hljs-variable">@dist</span>-r]<span class="hljs-variable">$ </span>ssh-copy-id localhost
+[user<span class="hljs-variable">@dist</span>-r]<span class="hljs-variable">$ </span>ssh localhost           <span class="hljs-comment"># test it!</span></code></pre><p>From your local computer, access the R Studio web interface in the address <code>http://dist-r:8787/</code> Replace <code>dist-r</code> for the IP of the Distributed R VM if you did not added it to your local hosts file. Use the login credentials we just created. You should see a beautilful R Studio interface. Let&#39;s test again just to be sure:</p>
+<pre class="hljs"><code>&gt; <span class="hljs-keyword">library</span>(distributedR)
+<span class="hljs-keyword">...</span> should load the dependencies
+
+&gt; distributedR_start()
+Workers registered - <span class="hljs-number">1</span>/<span class="hljs-number">1.</span>
+All <span class="hljs-number">1</span> workers are registered.
+Master address:port - localhost:<span class="hljs-number">50000</span></code></pre><h2 id="5-running-the-model">5. RUNNING THE MODEL</h2>
+<p>We created the model in a single R file called <code>gas_prediction.r</code> Also we created a dynamic &quot;R Markdown&quot; file called <code>gas_prediction.Rmd</code> explaining what, how and why we did it. For the uninitiated, this is a format where you can
+publish a document with runnable R code.</p>
+    </article>
+  </body>
+</html>

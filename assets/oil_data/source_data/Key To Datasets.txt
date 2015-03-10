@@ -1,0 +1,6 @@
+WTTSTUS1w.xls - Data 1: Weekly U.S. Ending Stocks of Crude Oil and Petroleum Products  (Thousand Barrels) - http://tonto.eia.gov/dnav/pet/hist/LeafHandler.ashx?n=PET&s=WTTSTUS1&f=W
+WGTSTUS1w.xls - Data 1: Weekly U.S. Ending Stocks of Total Gasoline  (Thousand Barrels) - http://tonto.eia.gov/dnav/pet/hist/LeafHandler.ashx?n=PET&s=WGTSTUS1&f=W
+RCLC1d.xls - Data 1: Cushing, OK Crude Oil Future Contract 1 (Dollars per Barrel) - http://tonto.eia.gov/dnav/pet/hist/LeafHandler.ashx?n=PET&s=RCLC1&f=D
+US Regular Conventional Gasoline Prices 1990-2015.xls - Data 1: Regular Conventional - http://www.eia.gov/petroleum/gasdiesel/xls/pswrgvwall.xls
+MCRFPUS1m.xls - U.S. Field Production of Crude Oil (Thousand Barrels) - http://tonto.eia.gov/dnav/pet/hist/LeafHandler.ashx?n=PET&s=MCRFPUS1&f=M
+C100000001m.xls - U.S. Total Gasoline All Sales/Deliveries by Prime Supplier (Thousand Gallons per Day) - http://tonto.eia.gov/dnav/pet/hist/LeafHandler.ashx?n=PET&s=C100000001&f=M
