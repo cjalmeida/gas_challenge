@@ -1,0 +1,168 @@
+This is <em>"Part 1: Installation"</em> of a two-part blog post where we're going to use two products of HP Haven's Big Data Platform: "Vertica", a column-oriented analytical database and "Distributed R", a distributed platform for running applications written in the "R" language. The goal is to build a predictive model in R for Gasoline prices in the USA using <a href="http://code.zapto.org/wp-content/uploads/2015/03/gas_prediction.zip">sample data</a> provided by the EIA.
+
+If you already have a running Vertica and Distributed R environment, you can skip directly to "<a title="Gas Price Predicition Using HP Vertica and HP Distributed R – Part 2: Building the Model" href="http://code.zapto.org/?p=15">Part 2: Building the Model</a>".
+
+&nbsp;
+<h2>INSTALLING VERTICA</h2>
+The easiest way is to use a virtual machine with Vertica pre-installed provided by HP based on CentOS 5.5. To download the VM you must create an account in <a href="http://my.vertica.com">http://my.vertica.com</a> then proceed to "Downloads". We'll provide a step-by-step installation but you can check the <a href="http://my.vertica.com/docs/7.1.x/HTML/index.htm">official documentation</a> if you need more info or prefer to install it on your own VM. You can use any VM player you want that support either VMDK or OVF files. HP recommends VMware Player or vSphere.
+
+Alternativelly you can download pre-build packages for RHEL/CentOS 5 or 6, Debian 6 / Ubuntu 14.04 LTS, or SUSE 11 from the my.vertica.com download site. You can then install it using your preffered package manager.
+
+You'll need the Vertica VM to communicate to another VM we'll use for "Distributed R". This configuration is Virtual Machine player dependent but, as a rule, setting your VM network adapter to "Bridge Mode" should suffice.
+
+&nbsp;
+<h2>CONFIGURING VERTICA</h2>
+After you boot Vertica's VM, you can login with "dbadmin" as username and "password" as password. Fire the terminal (Applications -&gt; Accessories -&gt; Terminal) and run:
+<pre class="lang:default highlight:0 decode:true">[dbadmin@vertica]$ admintools</pre>
+Accept the EULA then open the "Configuration Menu". Select "Create Database" to create a new database called "gas" and with password "gaspwd". Assume all the defaults and after the database initialization you should see a "Database gas created successfully". Go back to the Main Menu and select "View Database Cluster State". You should see the gas database in the list with the state "UP".
+
+That's it! You can use the <em>vsql</em> command-line tool to interact with you running instance. Those familiar with PostgreSQL's <em>psql</em> tool will feel at home.
+
+Take a note of the virtual machine's IP address. You can get it issuing <span class="lang:default highlight:0 decode:true  crayon-inline ">/sbin/ipconfig</span>  command at the terminal. You can optionally add it to your local <span class="lang:default highlight:0 decode:true  crayon-inline">/etc/hosts</span> file.
+
+<strong>Note that by default Vertica DOES NOT AUTO-START at machine boot</strong>. You need to run the <em>admintools</em> command and start the database on every virtual machine boot.
+<h2></h2>
+<h2>LOADING THE SAMPLE DATA</h2>
+You can download the <a href="http://code.zapto.org/wp-content/uploads/2015/03/gas_prediction.zip">sample data here</a>. Now we should load the sql files in the local "assets/oil_data" folder into Vertica. You can copy this folder to your Vertica VM using SCP:
+<pre class="lang:default highlight:0 decode:true">[user@yourmachine]$ cd gas_prediction
+[user@yourmachine]$ scp assets/oil_data dbadmin@&lt;vertica-vm-ip&gt;:/tmp</pre>
+Replace <em>&lt;vertica-vm-ip&gt;</em> with the IP of the VM running Vertica. Then you can use the <em>vsql</em> tool in your Vertica machine to load the data. From the terminal (or ssh session if you set it up), we'll load the DB schema and all data SQL files using a for loop:
+<pre class="lang:default highlight:0 decode:true ">[dbadmin@vertica]$ cd /tmp/oil_data
+[dbadmin@vertica]$ vsql -d gas -w gaspwd -f schema.sql
+[dbadmin@vertica]$ for f in sample_data/*.sql; do vsql -q -d gas -w gaspwd -f $f &gt; /dev/null; done</pre>
+You can run the <em>vsql</em> command <span class="lang:default highlight:0 decode:true  crayon-inline ">\dt</span>  to list all tables and check if they were loaded:
+<pre class="lang:default highlight:0 decode:true">[dbadmin@vertica]$ vsql -d gas -w gaspwd -c '\dt'
+
+                               List of tables
+ Schema |                  Name                  | Kind  |  Owner  | Comment
+--------+----------------------------------------+-------+---------+---------
+ public | crude_oil_and_petroleum                | table | dbadmin |
+ public | crude_oil_future_contract              | table | dbadmin |
+ public | total_gasoline                         | table | dbadmin |
+ public | total_gasoline_by_prime_supplier       | table | dbadmin |
+ public | us_field_production_of_curde_oil       | table | dbadmin |
+ public | us_regular_conventional_gasoline_price | table | dbadmin |
+(6 rows)
+
+</pre>
+<h2></h2>
+<h2>INSTALLING DISTRIBUTED-R</h2>
+"Distributed R" is a scalable distributed platform for running R scripts. First you'll need to download the latest binary distribution from <a href="http://my.vertica.com">http://my.vertica.com</a>. In the "Download" section, search for "HP Vertica Distributed R" then select the "Distributed R 1.0.0 – Red Hat/CentOS" option. Agree to the EULA and wait for the download to complete.
+
+For Distributed-R, we're going to install in a pristine CentOS 6.5 (64-bit) machine. You can install from CentOS official ISO files or you can search for a ready-made appliance. For the installation part, we'll the commands as <em>root</em>. Again, discover the IP of the new VM using <em>/sbin/ifconfig</em> and (optionally) add it to your local <em>/etc/hosts</em> file:
+
+First, we need to make sure you have unixODBC and SSH are installed and running in the virtual machine. If it's not installed you can fix that by issuing:
+<pre class="lang:default highlight:0 decode:true">[root@dist-r]# yum install openssh-server unixODBC</pre>
+Now make sure you can ssh to your own user without a password. To setup a SSH password-less connection:
+<pre class="lang:default highlight:0 decode:true">[root@dist-r]# ssh-keygen
+[root@dist-r]# ssh-copy-id localhost
+[root@dist-r]# ssh localhost              # test it!</pre>
+After configuring the virtual machine, we can start installing the Distributed-R. Copy the downloaded file into the VM and extract the file into <em>/tmp</em>. (Note: for some reason, I had to gunzip the file first before untarring). We'll install it in localhost in Single Node mode.
+<pre class="lang:default highlight:0 decode:true">[root@dist-r]# cd /tmp/vertica-distributedR-1.0.0-0/helpers
+[root@dist-r]# ./distributedR_install_dependencies localhost</pre>
+Install all missing dependencies when asked. It should take a while. Once finished, run the installation script as instructed:
+<pre class="lang:default highlight:0 decode:true">[root@dist-r]# cd /tmp/vertica-distributedR-1.0.0-0/                # note we descended one directory
+[root@dist-r]# ./distributedR_install localhost
+</pre>
+When asked:
+<ul>
+	<li>Select the localhost as the master <strong>[1]</strong></li>
+	<li>Set all nodes as workers <strong>[1]</strong></li>
+	<li>Do not specify custom port ranges <strong>[n]</strong></li>
+	<li>Install Vertica RODBC support <strong>[Y]</strong></li>
+	<li>Run the test to make sure everything is OK <strong>[Y]</strong></li>
+</ul>
+Distributed R is now installed. To test it, from the dist-r VM:
+<pre class="lang:default highlight:0 decode:true ">[root@dist-r]# R            # start a new R session</pre>
+<pre class="lang:r decode:true">&gt; library(distributedR)
+... should load the dependencies
+
+&gt; distributedR_start()
+Workers registered - 1/1.
+All 1 workers are registered.
+Master address:port - localhost:50000
+
+</pre>
+<h2>CONFIGURING VERTICA vRODBC</h2>
+Distributed R can connect directly to Vertica using the vRODBC Driver. The libraries were already installed by Distributed R installation script so we just need to configure the connection parameters. Like all ODBC-flavored drivers, add the configuration to an <em>odbc.ini</em> file. In the <strong>Distributed R Virtual Machine</strong> create a file located at <em>/etc/odbc.ini</em> with the following content:
+<pre class="lang:ini decode:true">[ODBC Data Sources]
+VerticaGasDSN = "Vertica Gas Database"
+
+[VerticaGasDSN]
+Description = Gas DSN for Vertica
+Driver = /opt/hp/odbc/lib64/libverticaodbc.so
+Database = gas
+Servername = &lt;ip-of-vertica-vm&gt;
+UserName = dbadmin
+Password = gaspwd
+Port = 5433
+ConnSettings =
+Locale = en_US
+
+[Driver]
+ODBCInstLib=/usr/lib64/libodbcinst.so
+ErrorMessagesPath=/opt/hp/odbc/lib64/
+DriverManagerEncoding=UTF-16
+LogPath=/tmp
+LogNameSpace=
+LogLevel=0</pre>
+Replace the <em>&lt;ip-of-vertica-vm&gt;</em> string with the IP of the VM you previously installed Vertica. Try to <em>ping</em> it to check for connectivity from inside the Distributed R VM. Now create a <em>vertica.ini</em> file for additional Vertica configuration at <em>/etc/vertica.ini</em> and paste the content below:
+<pre class="lang:ini highlight:0 decode:true ">[Driver]
+ODBCInstLib=/usr/lib64/libodbcinst.so
+ErrorMessagesPath=/opt/hp/odbc/lib64/
+DriverManagerEncoding=UTF-16
+LogPath=/tmp
+LogNameSpace=
+LogLevel=0
+</pre>
+You need to set the location of the two files in <em>VERTICAINI</em> and <em>ODBCINI</em> environment variables. To do this permanently create a file at <em>/etc/profile.d/vertica-odbc.sh</em> containing:
+<pre class="lang:sh decode:true">export ODBCINI=/etc/odbc.ini
+export VERTICAINI=/etc/vertica.ini
+</pre>
+Check if you can connect to vertica server using unixODBC <em>isql</em> tool:
+<pre class="lang:default highlight:0 decode:true">[root@dist-r]# source /etc/profile.d/vertica-odbc.sh # Load the environment variables into current session
+[root@dist-r]# isql -v VerticaGasDSN
+</pre>
+&nbsp;
+<h2>INSTALLING R-STUDIO SERVER</h2>
+Now we're going to install on the Distributed R Virtual Machine the "R-Studio Server" environment. This enables us to run R scripts on the virtual machine's R installation from the comfort of our local machine using a neat desktop-like interface. We'll follow the instructions for the CentOS 6.x.
+<pre class="lang:default highlight:0 decode:true">[root@dist-r]# yum install openssl098e wget
+[root@dist-r]# wget http://download2.rstudio.org/rstudio-server-0.98.1102-x86_64.rpm
+[root@dist-r]# yum install --nogpgcheck rstudio-server-0.98.1102-x86_64.rpm
+[root@dist-r]# rstudio-server verify-installation # check installation
+</pre>
+We'll need login credentials to access R Studio so let's create them now using standard Linux tools. For every user, we'll also need to setup password-less ssh connection to localhost.
+<pre class="lang:default highlight:0 decode:true">[root@dist-r]# useradd user
+[root@dist-r]# passwd user
+[root@dist-r]# su - user
+
+[user@dist-r]$ ssh-keygen
+[user@dist-r]$ ssh-copy-id localhost
+[user@dist-r]$ ssh localhost # test it!
+</pre>
+To connect Vertica DB, we'll also need to setup R-Studio Server start-up environment. We do that by creating a <em>.Renviron</em> file in our new user's home directory and adding the required variables.
+<pre class="lang:default highlight:0 decode:true">[root@dist-r]# su - user
+[user@dist-r]$ echo "ODBCINI=/etc/odbc.ini" &gt;&gt; ~/.Renviron
+[user@dist-r]$ echo "VERTICAINI=/etc/vertica.ini" &gt;&gt; ~/.Renviron
+</pre>
+From your local computer, access the R Studio web interface in the address <a href="http://dist-r:8787">http://dist-r:8787/</a> Replace "dist-r" for the IP of the Distributed R VM if you did not added it to your local <em>hosts</em> file. Use the login credentials we've just created. You should see a beautiful R Studio interface. Let's test again just to be sure:
+<pre class="lang:r decode:true">&gt; library(distributedR)
+... should load the dependencies
+
+&gt; distributedR_start()
+Workers registered - 1/1.
+All 1 workers are registered.
+Master address:port - localhost:50000
+
+&gt; library(vRODBC)
+&gt; odbcConnect('VerticaGasDSN')
+vRODBC Connection 1
+Details:
+case=nochange
+DSN=VerticaGasDSN
+</pre>
+You can add a command to the bottom of the <em>/etc/rc.local</em> file to auto-start R-Studio on machine boot:
+<pre class="lang:default highlight:0 decode:true">[root@dist-r]# echo 'sleep 3 &amp;&amp; rstudio-server start &gt;&gt; /etc/rc.local</pre>
+&nbsp;
+<h2>NEXT STEPS</h2>
+Our environment is set up and working and we can start building our prediction model. Check out the next part of this series "<a title="Gas Price Predicition Using HP Vertica and HP Distributed R – Part 2: Building the Model" href="http://code.zapto.org/?p=15">Part 2: Building the Model</a>".

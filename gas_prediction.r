@@ -1,4 +1,4 @@
-### Load Data and Prepare Data
+### Prepare the environment
 
 # Change env timezone to UTC make xts subsetting work
 Sys.setenv(TZ='UTC')
@@ -25,7 +25,7 @@ tryCatch(
 # Connect to the Database we configured in odbc.ini
 con <- odbcConnect("VerticaGasDSN")
 
-# Function to create the SQL query to load the data. "data_col" is the name of the column containing the data.
+# Function to create the SQL query to load the data.
 get_query <- function(table_name) {
   # The SQL query will use Vertica's FIRST_VALUE analytic function to get the closing value for the month
   # regardless if we're working with monthly, weekly or daily values. Vertica is *very* efficient in this
@@ -50,28 +50,24 @@ get_query <- function(table_name) {
 
 # We'll create a load_data function to fully load a table from Vertica into Distributed R
 load_data <- function(con, table_name) {
-                 
+  
   d <- sqlQuery(con, get_query(table_name))
-  d[2][d[2]==0] <- NA
+  
+  # Detect zero, assing to NA, create xts object and interpolate.
+  d[2][d[2]==0] <- NA   
   d.x <- xts(d[2], order.by=as.yearmon(d$yearmon))
   d.x <- na.approx(d.x)
   return (d.x)
 }
 
-# In our model, we'll try to forecast the 3-month gas price using a regression model based on crude future
-# First let's load the data and get it to the frequency we want.
+
+## Do load the data
 
 # Data 1: Weekly U.S. Ending Stocks of Crude Oil and Petroleum Products (Thousand Barrels)
-# Stock levels have a seasonal component that we should remove to improve our prediction. We'll use the
-# "decompose" function from "stats" package and subtract the "seasonal" part from our data.
 crude_stock <- load_data(con, "crude_oil_and_petroleum")
-crude_stock <-(xts(as.ts(crude_stock) / decompose(as.ts(crude_stock), type = 'mult')$seasonal, order.by=index(crude_stock)))
-#crude_stock <-(xts(decompose(as.ts(crude_stock))$random, order.by=index(crude_stock)))
 
 # Data 2: Weekly U.S. Ending Stocks of Total Gasoline (Thousand Barrels)
-# Another stock variable that we want to remove the seasonal component.
 gas_stock <- load_data(con, "total_gasoline")
-gas_stock <- (xts(as.ts(gas_stock) / decompose(as.ts(gas_stock), type = 'mult')$seasonal, order.by=index(gas_stock)))
 
 # Data 3: Cushing, OK Crude Oil Future Contract 1 (Dollars per Barrel)
 # Contract 1 reflect "next delivery" price of crude oil. We could use Contract 3 price from EIA 
@@ -79,11 +75,7 @@ gas_stock <- (xts(as.ts(gas_stock) / decompose(as.ts(gas_stock), type = 'mult')$
 crude_price <- load_data(con, "crude_oil_future_contract")
 
 # Data 4: US Regular Conventional Gasoline Retail Prices (Dollars per Gallon)
-# Note: That's what we want to predict. So we'll also create a data set indexed 3 months in the future 
-# to train and compare our predictions
 gas_price <- load_data(con, "us_regular_conventional_gasoline_price")
-idx_3m <- index(gas_price) - 3/12  # each month in yearmon objects is 1/12
-gas_price_3m <- xts(coredata(gas_price), order.by = idx_3m)
 
 # Data 5: U.S. Field Production of Crude Oil (Thousand Barrels)
 # Note: there's a typo in table name
@@ -95,12 +87,26 @@ gas_sales <- load_data(con, "total_gasoline_by_prime_supplier")
 # close DB handle
 odbcCloseAll()
 
+
+# We want to predict the gas price in 3 months. So we'll also create a data set where move the dates 3 months to the past.
+idx_3m <- index(gas_price) - 3/12  # each month in yearmon objects is 1/12
+gas_price_3m <- xts(coredata(gas_price), order.by = idx_3m)
+
+
+# Stock levels have a seasonal component that we should remove to improve our prediction. We'll use the
+# "decompose" function from "stats" package and remove the "seasonal" part from our data.
+crude_stock <-(xts(as.ts(crude_stock) / decompose(as.ts(crude_stock), type = 'mult')$seasonal, 
+                   order.by=index(crude_stock)))
+
+gas_stock <- (xts(as.ts(gas_stock) / decompose(as.ts(gas_stock), type = 'mult')$seasonal, 
+                  order.by=index(gas_stock)))
+
 # We'll merge the data into a single xts object, filter for complete cases only and adjust their names.
 # The last value is the response data. We'll also remove the objects from environment to save memory
 dset <- merge(crude_price, crude_prod, crude_stock, gas_sales, gas_stock, gas_price, gas_price_3m)
 dset <- dset[complete.cases(dset)]
 names(dset) <- c("crude_price", "crude_prod", "crude_stock", "gas_sales", "gas_stock", "gas_price", "gas_price_3m")
-rm(crude_price, crude_prod, crude_stock, gas_sales, gas_stock, gas_price_3m, gas_price)
+rm(crude_price, crude_prod, crude_stock, gas_sales, gas_stock, gas_price, gas_price_3m)
 
 # Now we'll split the data into training and test sets from start to "2010-Dec"
 # First of all, we'll detect the earliest start date by applying the "start"
@@ -108,7 +114,6 @@ rm(crude_price, crude_prod, crude_stock, gas_sales, gas_stock, gas_price_3m, gas
 # and convert it back to "yearmon" object
 dset.train <- as.data.frame(dset["/2010"])
 dset.test <- as.data.frame(dset["2011/"])
-dset
 
 
 # We'll create a two Random Forest models, one using all variables and another using selected variables we know from testing that gives us
@@ -119,8 +124,7 @@ dset
 # The number of executors is, ideally a bit lower the number of Distributed R instances. We can get the info from the distributedR_status 
 # function.
 
-ds <- distributedR_status()
-nExecutor <- sum(ds$Inst)
+nExecutor <- sum(distributedR_status()$Inst)
 actuals <- dset.test$gas_price_3m
 
 # We'll create a "model runner" function to simply the testing using a number of different predictor variables. The function
@@ -209,16 +213,17 @@ r3 <- build_glm(predictors)
 r4 <- build_svm(predictors)
 
 # Let's analyse the RMSE and Execution time of all models
-extract <- function(l, arg) { return(unlist(sapply(l, function(x) x[[arg]]))) }
-models <- list(r0, r1, r2, r3, r4)
-models_summary <- data.frame("RMSE" = extract(models, "rmse"), "Execution Time" = extract(models, "time"))
+RMSE <- c(r0$rmse, r1$rmse, r2$rmse, r3$rmse, r4$rmse)
+EXEC_TIME <- c(r0$time, r1$time, r2$time, r3$time, r4$time)
+models_summary <- data.frame("RMSE" = RMSE, "Execution Time" = EXEC_TIME)
 row.names(models_summary) <- c("Naive", "Random Forest (all vars)", "Random Forest (key vars)", "GLM Gaussian", "SVR")
 print("")
 print("Comparison of models")
 print(models_summary)
 
-# Our models improve slightly over the Naive approach - ~0.35 RMSE against ~0.37. We're picking choosing the Support Vector
-# Regression model to output our results.
+# Our models improve slightly over the Naive approach - ~0.35 RMSE against ~0.37. We're picking the Ramdom Forest
+# model to output our results.
 
-test.output <- cbind(dset.test[predictors], prediction_gas_price_3m=r4$predictions, actual_gas_price_3m=actuals)
+test.output <- cbind(dset.test[predictors], prediction_gas_price_3m=r2$predictions, actual_gas_price_3m=actuals)
 write.csv(test.output, file="output.csv")
+print("Output written to 'output.csv' file in the current directory.")

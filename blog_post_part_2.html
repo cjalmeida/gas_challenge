@@ -1,0 +1,255 @@
+This is "Part 2: Building the Model" of a two-part blog post where we're going to use two products of HP Haven's Big Data Platform: "Vertica", a column-oriented analytical database and "Distributed R", a distributed platform for running applications written in the "R" language. We're going to build a predictive model in R for Gasoline prices in the USA using <a href="http://code.zapto.org/wp-content/uploads/2015/03/gas_prediction.zip">sample data</a> provided by US Energy Information Administration. For this specific model, we'll try to guess what the retail gasoline price will be three months from now.
+
+We assume you already have a running Vertica and Distributed R environment with R-Studio Server installed. If you don't, you can follow the instructions on <a title="Gasoline Price Predicition Using HP Vertica and Distributed R – Part 1: Installation" href="http://code.zapto.org/?p=1">"Part 1: Installation"</a>. The sample dataset and R script with all the code from this tutorial can be <a href="http://code.zapto.org/wp-content/uploads/2015/03/gas_prediction.zip">downloaded here</a>.
+<h2>Installing the Packages</h2>
+Before we start our model, we must make sure all the required R packages are installed. "DistributedR" and "vRODBC" were installed during Distributed R installation. To access the R Studio Server, navigate to http://dist-r:8787/ address and login using the username/password created on the Part 1 of this tutorial. Of course, replace "dist-r" with the IP address of the Distributed R virtual machine. From the console execute:
+<pre class="lang:r decode:true">install.packages(c("xts", "Metrics", "e1071"))</pre>
+With all the required packages installed, we can begin building our model. The complete code can be found on the <em>gas_prediction.r</em> file. First, let's load the libraries, start Distributed R and setup the connection to Vertica.
+<pre class="lang:r decode:true"># Change env timezone to UTC make xts subsetting work
+Sys.setenv(TZ='UTC')
+
+# Load the required libraries
+library(stats)
+library(xts)
+library(vRODBC)
+library(distributedR)
+library(Metrics)
+library(HPdclassifier)
+library(HPdregression)
+library(e1071)
+
+# Start Distributed R (ignore error if already started)
+tryCatch(
+  {
+    distributedR_start()
+  },  error= function(e) {
+    if (!grepl('is already running', e$message)) stop(e)
+  }
+)
+
+# Connect to the Database we configured in odbc.ini
+con &lt;- odbcConnect("VerticaGasDSN")
+print(con)</pre>
+The last statement should show a valid vRODBC connection as follows:
+<pre class="lang:default highlight:0 decode:true">vRODBC Connection 1
+Details:
+  case=nochange
+  DSN=VerticaGasDSN</pre>
+<h2>Loading and Preparing the Data</h2>
+Now we can start loading and preparing the data. Our dataset has daily, weekly and monthly data. We'll use Vertica's analytic functions to find the closing value for the month in the weekly and daily data, and get the data to a single granularity. Those functions allow for complex queries, like getting a moving average of quotes, rank salesman by sales, or last purchase date for a customer, to be run on the Vertica cluster. This potentially avoid the need to load and manipulate massive amount of data into memory. In this case, we'll use FIRST_VALUE function, partitioned by year and month, sorted by date on descending order (the ascending order would give us the opening value).
+
+And since all our tables are in the (date, value) format, we'll use a function to create the SQL:
+<pre class="lang:r decode:true"># Function to create the SQL query to load the data.
+get_query &lt;- function(table_name) {
+  # We'll detect the data column name from meta-data
+  data_col &lt;- names(sqlQuery(con, paste('select * from', table_name, 'limit 0')))[2]
+  
+  # Note that the query will run the FIRST_VALUE function on a DESC ordered by date set because we want the closing value.
+  sub_query &lt;- paste("select year(date) as y,  month(date) as m,", 
+                     "first_value(", data_col, ") over(partition by year(date), month(date) order by date desc) closing",
+                     "from", table_name)
+  
+  # The data is not grouped, so we'll wrap our query to group by year and month. Additionaly we're going to return
+  # the (year, month) information in the xts "yearmon" representation format (year + (month_number-1)/12)
+  query &lt;- paste("select y + (m-1)/12 as yearmon, max(closing) as closing from",
+                 "(", sub_query, ") as subq",
+                 "group by 1 order by 1")
+  return(query)
+}</pre>
+With the SQL, we can query the database and retrieve the data.  Again, we'll create a function to do that:
+<pre class="lang:r decode:true ">load_data &lt;- function(con, table_name) {
+  
+  d &lt;- sqlQuery(con, get_query(table_name))
+  
+  # Detect zero, assing to NA, create xts object and interpolate.
+  d[2][d[2]==0] &lt;- NA   
+  d.x &lt;- xts(d[2], order.by=as.yearmon(d$yearmon))
+  d.x &lt;- na.approx(d.x)
+  return (d.x)
+}</pre>
+Loading the data into R now is pretty straightforward. On our dataset we have 6 variables:
+<ul>
+	<li>Stock of Crude Oil</li>
+	<li>Crude Oil Future Contract 1</li>
+	<li>Production of Crude Oil</li>
+	<li>Stock of Gasoline</li>
+	<li>Sales of Gasoline</li>
+	<li>Gasoline Retail Prices</li>
+</ul>
+We'll use the code below to load each into memory, and close the connection to the database:
+<pre class="lang:r decode:true"># Data 1: Weekly U.S. Ending Stocks of Crude Oil and Petroleum Products (Thousand Barrels)
+crude_stock &lt;- load_data(con, "crude_oil_and_petroleum")
+
+# Data 2: Weekly U.S. Ending Stocks of Total Gasoline (Thousand Barrels)
+gas_stock &lt;- load_data(con, "total_gasoline")
+
+# Data 3: Cushing, OK Crude Oil Future Contract 1 (Dollars per Barrel)
+# Contract 1 reflect "next delivery" price of crude oil. We could use Contract 3 price from EIA 
+# for a better model, but we'll stick to the dataset we already have.
+crude_price &lt;- load_data(con, "crude_oil_future_contract")
+
+# Data 4: US Regular Conventional Gasoline Retail Prices (Dollars per Gallon)
+gas_price &lt;- load_data(con, "us_regular_conventional_gasoline_price")
+
+# Data 5: U.S. Field Production of Crude Oil (Thousand Barrels)
+# Note: there's a typo in table name
+crude_prod &lt;- load_data(con, "us_field_production_of_curde_oil")
+
+# Data 6:  U.S. Total Gasoline All Sales/Deliveries by Prime Supplier
+gas_sales &lt;- load_data(con, "total_gasoline_by_prime_supplier")
+
+# close DB handle
+odbcCloseAll()
+</pre>
+We want to predict the Gasoline Retail Prices three month from now, so we need an additional dataset containing the "3 month forward" price of gasoline.
+<pre class="lang:r decode:true"># We want to predict the gas price in 3 months. So we'll also clone the data set and move the dates 3 months to the past.
+idx_3m &lt;- index(gas_price) - 3/12  # each month in yearmon objects is 1/12
+gas_price_3m &lt;- xts(coredata(gas_price), order.by = idx_3m)</pre>
+In time-series analysis, data that represent stocks are usually seasonal and sometimes you can improve your prediction by removing the seasonal component of the data. We'll remove the seasonal part of the data using the <em>decompose</em> function from the <em>stats</em> package. We encourage you to try for yourself by running the code with the lines commented out and check the resulting models.
+<pre class="lang:r decode:true">crude_stock &lt;- (xts(as.ts(crude_stock) / decompose(as.ts(crude_stock), type = 'mult')$seasonal, 
+                   order.by=index(crude_stock)))
+
+gas_stock &lt;- (xts(as.ts(gas_stock) / decompose(as.ts(gas_stock), type = 'mult')$seasonal, 
+                  order.by=index(gas_stock)))
+</pre>
+Using the <em>merge.xts</em> function, we get a time aligned data object, each row representing the state in a given month/year. Since each variable has different start/ending date, we're interested only on those rows with no NA. We can use the <em>complete.cases</em> function to filter the data to only those rows that match the criteria.
+<pre class="lang:r decode:true"># We'll merge the data into a single xts object, filter for complete cases only and adjust their names.
+# The last value is the response data. We'll also remove the objects from environment to save memory
+dset &lt;- merge(crude_price, crude_prod, crude_stock, gas_sales, gas_stock, gas_price, gas_price_3m)
+dset &lt;- dset[complete.cases(dset)]
+names(dset) &lt;- c("crude_price", "crude_prod", "crude_stock", "gas_sales", "gas_stock", "gas_price", "gas_price_3m")
+rm(crude_price, crude_prod, crude_stock, gas_sales, gas_stock, gas_price, gas_price_3m)</pre>
+Before running our machine learning algorithms, we'll split the data in a "training" set and a "test" set we'll use for validating the model. The training set we will use to train the model will run from the earliest available case to Dec-2010. and the test data will run from Jan-2011 to the latest available data.
+<pre class="lang:r decode:true"># Now we'll split the data into training and test sets from start to "2010-Dec"
+# First of all, we'll detect the earliest start date by applying the "start"
+# function to our dataset ignoring NA values. Then we find the max start date
+# and convert it back to "yearmon" object
+dset.train &lt;- as.data.frame(dset["/2010"])
+dset.test &lt;- as.data.frame(dset["2011/"])</pre>
+<h2>Evaluating the models</h2>
+The data is ready and we can start evaluating our machine learning algorithms. For this tutorial, we're going to build 5 different models:
+<ul>
+	<li>"Model 0" is our control model built using a "naive" approach to forecasting. We'll simply assume the gas price in three months is equal to current price. This "no-change" approach to forecasting is useful to assess if our more complex algorithms bring any improvement.</li>
+	<li>"Model 1" is a Random Forest model using all available variables. It's an exploratory model where we'll try to identify which variables are important to our prediction and which only add noise. A Random Forest method to create an "ensemble" of automatically build decision trees, useful for classification and regression. You can find a great explanation in <a href="http://blog.echen.me/2011/03/14/laymans-introduction-to-random-forests/">layman terms in Edwin Chen's blog</a>. We're using an implementation provided by HP that leverages Distributed R parallel execution capabilities.</li>
+	<li>"Model 2" is another Random Forest model, but only with selected variables.</li>
+	<li>"Model 3" builds a Generalized Linear Model (GLM), using HP's distributed version of the algorithm. A GLM is a generalization of our good old linear regression to accept different error probabilities. However we're just going to use a normal distribution anyway.</li>
+	<li>"Model 4" creates model based on Support Vector Machines (SVM) but generalized for regression analysis. SVMs are widely known as one of the most accurate algorithms with sound theoretical framework. However, their training method are complex O(n²) and O(n³) and very difficult to distribute. For this reason, one should proceed with caution when using SVM for large datasets. HP does not provide a distributed SVM algorithm so we're using the one provided by the "e1071" package.</li>
+</ul>
+While this is a small-scale experiment and we're holding all data in memory, the distributed versions of "randomForest" and "glm" are able to operate on data spread on a cluster, by using distributed data structures like "darray" and "dframe". The provided functions take care of parallel training and latter combining the results into a coherent model.
+
+We created helper functions to train and evaluate the data for a given algorithm. Each function accept a vector with the variables we want to predict as an argument. Then the "build_" functions return an object with the the "model" object, the predicted values, the Root Mean Squared Error (RMSE) of the prediction compared with the actual values, and the execution time.
+<pre class="lang:r decode:true"># First we'll calculate the number of Distributed R executors and prepare our "actual" data to compare to predictions
+nExecutor &lt;- sum(distributedR_status()$Inst)
+actuals &lt;- dset.test$gas_price_3m
+
+
+# Use Distributed R Random Forest function, a parallelized version of the algorithm
+build_randomForest &lt;- function (predictors) {
+ time &lt;- system.time({
+ # train the model
+ X = dset.train[predictors]
+ Y = dset.train$gas_price_3m
+ my_model &lt;- hpdrandomForest(x = X, y = Y, nExecutor = nExecutor, importance = T) 
+ 
+ # test the model
+ predicted_vals &lt;- predict(my_model, dset.test[predictors])
+ model_rmse &lt;- rmse(actuals, predicted_vals)
+ })
+ return(list("model" = my_model, "predictions" = predicted_vals, "rmse" = model_rmse, "time" = time[3]))
+}
+
+# Use Distributed R glm function, a parallelized version of the algorithm for Generalized Linear Models
+build_glm &lt;- function(predictors) {
+ time &lt;- system.time({
+ # Train the model. Since we're not supplying the number of blocks, the function will strip
+ # the data across the cluster by default.
+ X = as.darray(as.matrix(dset.train[predictors]))
+ Y = as.darray(as.matrix(dset.train$gas_price_3m))
+ my_model &lt;- hpdglm(responses = Y, predictors = X, family = gaussian(link=identity)) 
+ 
+ # test the model
+ predicted_vals &lt;- predict(my_model, as.matrix(dset.test[predictors]))
+ model_rmse &lt;- rmse(actuals, predicted_vals)
+ })
+ return(list("model" = my_model, "predictions" = predicted_vals, "rmse" = model_rmse, "time" = time[3]))
+}
+
+# Create a Support Vector Regression model for the data. We want to optimize the epsilon parameter
+# so we're using a "nu-regression" type. 
+build_svm &lt;- function(predictors) {
+ time &lt;- system.time ({
+ # Train the model. Since we're not supplying the number of blocks, the function will strip
+ # the data across the cluster by default.
+ X = as.matrix(dset.train[predictors])
+ Y = as.matrix(dset.train$gas_price_3m)
+ 
+ my_model &lt;- svm(y = Y, X, type = 'nu-regression', kernel = 'linear') 
+ 
+ 
+ # test the model
+ predicted_vals &lt;- predict(my_model, as.matrix(dset.test[predictors]))
+ model_rmse &lt;- rmse(actuals, predicted_vals)
+ })
+ return(list("model" = my_model, "predictions" = predicted_vals, "rmse" = model_rmse, "time" = time[3]))
+}
+
+</pre>
+We'll then create our control model (Model 0) and our exploratory model (Model 1). We'll use a feature of Random Forest that present us with the "importance" of each variable to decide which we'll use in our prediction model.
+<pre class="lang:r decode:true"># Model 0: Naïve "no-change" model. It assumes the gasoline price in 3 months will be equal to current price.
+# The no-change model is usually used to control if our costlier models do improve over the simplest approach to forecasting.
+r0 &lt;- list()
+r0$time &lt;- system.time({
+  r0$predictions &lt;- dset.test$gas_price
+  r0$rmse &lt;- rmse(actuals, r0$predictions)
+})[3]
+
+# Model 1: RF model using all variables. The RF model is good for this kind of exploratory work since it can calculate
+# the "importance" of each variable and let us take somewhat unimportant data out of the training set and maybe improve
+# our models.
+predictors_all &lt;- names(dset.test)[names(dset.test) != "gas_price_3m"]
+r1 &lt;- build_randomForest(predictors_all)
+importance &lt;- r1$model$importance
+print("Variable importance from Random Forest model with all variables:")
+print(importance)</pre>
+<pre class="lang:default highlight:0 decode:true ">[1] "Variable importance from Random Forest model with all variables:"
+               %IncMSE IncNodePurity
+crude_price 0.25672347     42.766294
+crude_prod  0.06238212     16.551926
+crude_stock 0.11525043     23.109038
+gas_sales   0.01437697      5.935608
+gas_stock   0.01374900      3.053674
+gas_price   0.24318044     39.245068</pre>
+As you can see, the variables "crude_price", "crude_stock", "gas_price" have much higher "%IncMSE" values. Technically, this means that when you randomly change  these variables, the Mean Square Error increases by the presented values. This is a measure of variable importance - a non-relevant variable would have very low impact on the fitting of the model, whereas a change relevant variable would highly impact the fitting.
+
+Now we're going to create the remaining models, using these 3 variables as predictors and analyse the results.
+<pre class="lang:r decode:true"># Model 2: create a RF model based exclusively on selected variables
+r2 &lt;- build_randomForest(predictors)
+
+# Model 3: GLM Gaussian model based exclusively on selected variables
+r3 &lt;- build_glm(predictors)
+
+# Model 4: Support Vector Regression model based on selected variables. 
+r4 &lt;- build_svm(predictors)
+
+# Let's analyse the RMSE and Execution time of all models
+RMSE &lt;- c(r0$rmse, r1$rmse, r2$rmse, r3$rmse, r4$rmse)
+EXEC_TIME &lt;- c(r0$time, r1$time, r2$time, r3$time, r4$time)
+models_summary &lt;- data.frame("RMSE" = RMSE, "Execution Time" = EXEC_TIME)
+row.names(models_summary) &lt;- c("Naive", "Random Forest (all vars)", "Random Forest (key vars)", "GLM Gaussian", "SVR")
+print("Comparison of models")
+print(models_summary)
+</pre>
+<pre class="lang:default highlight:0 decode:true ">[1] "Comparison of models"
+                              RMSE Execution.Time
+Naive                    0.3755895          0.000
+Random Forest (all vars) 0.4783573          0.744
+Random Forest (key vars) 0.3495490          0.655
+GLM Gaussian             0.3544913         14.185
+SVR                      0.3542782          0.019</pre>
+As you can see, our models improve slightly over the Naive approach, ~0.35 compared to ~0.37. The GLM algorithm has a very high execution time, probably due to the overhead of running parallel code and data structures on a single virtual machine.
+
+&nbsp;
+<h2>Conclusion</h2>
+On this tutorial we were able to build a prediction model using Distributed R and Vertica database, and prove that our model improves (even if a little) over a naive approach. Though this is a small scale experiment, you can see we are able to leverage our knowledge of existing tools like SQL and R to build models able to perform on terabyte scale data that regularly wouldn't fit into memory or require unreasonable amount of time running on single computer.
+
+&nbsp;
