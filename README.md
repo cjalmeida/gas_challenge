@@ -8,10 +8,10 @@ goal is to build a predictive model in R for Gasoline prices in the USA using sa
 There are two blog posts carefully explaining how to install and run the challenge:
 
   * Part 1: Installation
-    - Blog post at http://code.zapto.org/?p=1
+    - Blog post at https://my.vertica.com/blog/gasoline-price-prediction-using-hp-vertica-and-distributed-rba-p228170/
 
   * Part 2: Building the Model
-    - Blog post at http://code.zapto.org/?p=15
+    - Blog post at https://my.vertica.com/blog/gasoline-price-prediction-using-hp-vertica-and-distributed-rba-p228370/
 
 There is a script called "load_data_into_vertica.py" that does exactly what the name says. The R model in located in a 
 single file named "gas_prediction.r". To install the required R packages, just run:
